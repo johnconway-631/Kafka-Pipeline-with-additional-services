@@ -1,0 +1,168 @@
+networks:
+  kafka_net:
+    driver: bridge
+
+services:
+
+# <===============================================================================>
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "81:81"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/html:/var/www/html
+    networks:
+      - kafka_net
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter
+    container_name: nginx-exporter
+    ports:
+      - "9113:9113"
+    command:
+      - '-nginx.scrape-uri=http://nginx:81/nginx_status'
+    depends_on:
+      - nginx
+    networks:
+      - kafka_net
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    network_mode: "host"
+    pid: "host"
+    restart: always
+# <===============================================================================>
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    networks:
+      - kafka_net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+# <===============================================================================>
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    networks:
+      - kafka_net
+    depends_on:
+      - zookeeper
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+      #- "9999:9999" 
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 5s
+      retries: 10
+      start_period: 10s
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka_exporter
+    networks:
+      - kafka_net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command: [
+      "--kafka.server=kafka:9092",
+      "--web.listen-address=:9308",
+      "--kafka.version=3.5.0" 
+    ]
+
+# <================================================================================>
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    networks:
+      - kafka_net
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./rules.yml:/etc/prometheus/rules.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - kafka
+      - kafka-exporter
+      - nginx-exporter
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager:/etc/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - kafka_net
+    depends_on:
+      - prometheus
+
+# <===============================================================================>
+  fluentbit:
+    image: fluent/fluent-bit:latest
+    restart: unless-stopped
+    container_name: fluentbit
+    ports:
+      - "2020:2020"
+      - "2020:2020/udp"
+    volumes:
+      - ./fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./fluentbit/logs:/fluentbit/logs
+      - ./fluentbit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - ./fluentbit/parse_logs.lua:/fluent-bit/etc/parse_logs.lua:ro
+    depends_on:
+      - loki
+    networks:
+      - kafka_net
+
+# <==============================================================================>
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - kafka_net
+
+# <==============================================================================>
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - kafka_net
+
