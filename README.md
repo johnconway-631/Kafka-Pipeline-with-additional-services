@@ -623,7 +623,7 @@ This generates realistic authentication logs for testing the parsing pipeline.
 
 <div align="center">
 
-**Built with ❤️ by a Senior Engineer**
+**Built with ❤️         **
 
 *Production-tested • Scalable • Observable*
 
